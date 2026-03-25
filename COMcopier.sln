@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "COMcopier", "COMcopier.csproj", "{F5FE027A-6506-45EC-9582-BB191E2035CE}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "COMcopier.ConfigUI", "COMcopier.ConfigUI\COMcopier.ConfigUI.csproj", "{8AE5EC07-E5B7-45C6-A53E-1562A8B2450B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{F5FE027A-6506-45EC-9582-BB191E2035CE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F5FE027A-6506-45EC-9582-BB191E2035CE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F5FE027A-6506-45EC-9582-BB191E2035CE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F5FE027A-6506-45EC-9582-BB191E2035CE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8AE5EC07-E5B7-45C6-A53E-1562A8B2450B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8AE5EC07-E5B7-45C6-A53E-1562A8B2450B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8AE5EC07-E5B7-45C6-A53E-1562A8B2450B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8AE5EC07-E5B7-45C6-A53E-1562A8B2450B}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
