@@ -1,0 +1,14 @@
+Third-Party Software Notices
+============================
+
+com0com - Null-modem emulator (com0com)
+---------------------------------------
+File: com0com-3.0.0.0-i386-and-x64-signed.zip
+Source: https://sourceforge.net/projects/com0com/
+License: GNU General Public License v2 (GPL-2.0)
+Copyright: Vyacheslav Frolov
+
+The com0com driver is distributed under the terms of the GNU General
+Public License version 2. The original, unmodified archive is included
+for convenience of offline installation. The full GPL-2.0 license text
+is available at: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
