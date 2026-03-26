@@ -5,15 +5,30 @@ echo ============================================
 echo.
 
 set DEPLOY_DIR=%~dp0deploy
-if "%PROCESSOR_ARCHITECTURE%"=="x86" (
-    if not defined PROCESSOR_ARCHITEW6432 (
-        set RUNTIME=win-x86
+
+:: Accept target architecture as parameter: deploy.bat x86 or deploy.bat x64
+if /i "%~1"=="x86" (
+    set RUNTIME=win-x86
+) else if /i "%~1"=="x64" (
+    set RUNTIME=win-x64
+) else if "%~1"=="" (
+    :: Default: detect build machine architecture
+    if "%PROCESSOR_ARCHITECTURE%"=="x86" (
+        if not defined PROCESSOR_ARCHITEW6432 (
+            set RUNTIME=win-x86
+        ) else (
+            set RUNTIME=win-x64
+        )
     ) else (
         set RUNTIME=win-x64
     )
 ) else (
-    set RUNTIME=win-x64
+    echo [ERROR] Unknown architecture: %~1
+    echo         Usage: deploy.bat [x86^|x64]
+    pause
+    exit /b 1
 )
+echo Target runtime: %RUNTIME%
 
 :: Find dotnet SDK - check common install locations
 set DOTNET_FOUND=0
