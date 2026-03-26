@@ -6,20 +6,24 @@ namespace COMcopier.Services;
 
 /// <summary>
 /// 하나의 소스 COM 포트에서 데이터를 수신하여 여러 대상 COM 포트로 복사합니다.
-/// 타임아웃 기반으로 하나의 인쇄 작업 단위를 감지합니다.
-/// 대상 포트는 전송 시에만 열고 즉시 닫아 다른 프로그램과 포트를 공유합니다.
+/// 패턴 미지정 대상: 데이터를 수신 즉시 전달하여 ESC/POS 명령(컷팅 등)을 보존합니다.
+/// 패턴 지정 대상: 타임아웃 기반으로 인쇄 작업을 감지한 뒤 패턴 매칭 후 전송합니다.
+/// 대상 포트는 데이터 흐름 중에만 열고 유휴 시 자동으로 닫습니다.
 /// </summary>
 public class PortCopier : IDisposable
 {
     private readonly MappingConfig _config;
     private readonly ILogger _logger;
     private SerialPort? _sourcePort;
-    private readonly List<DestinationEntry> _destinations = new();
 
-    private record DestinationEntry(DestinationConfig Config, Encoding Encoding);
+    // 패턴 없는 대상: 즉시 전달
+    private readonly List<DirectDestination> _directDests = new();
+    // 패턴 있는 대상: 버퍼링 후 전달
+    private readonly List<FilteredDestination> _filteredDests = new();
 
     private readonly MemoryStream _buffer = new();
     private readonly object _bufferLock = new();
+    private readonly object _writeLock = new();
     private Timer? _flushTimer;
     private Timer? _retryTimer;
     private CancellationTokenSource? _cts;
@@ -27,10 +31,28 @@ public class PortCopier : IDisposable
     // 데이터 수신 후 이 시간(ms) 동안 추가 데이터가 없으면 한 건의 인쇄 작업이 끝난 것으로 판단
     private const int FlushTimeoutMs = 500;
 
+    // 대상 포트 유휴 시 자동 닫기 대기 시간 (ms)
+    private const int PortIdleCloseMs = 2000;
+
     // 소스 포트 연결 재시도 간격 (ms)
     private const int RetryIntervalMs = 5000;
 
     public string Name => _config.Name;
+
+    private class DirectDestination
+    {
+        public required DestinationConfig Config;
+        public required Encoding Encoding;
+        public SerialPort? Port;
+        public Timer? IdleTimer;
+        public int Copies => Config.Copies;
+    }
+
+    private class FilteredDestination
+    {
+        public required DestinationConfig Config;
+        public required Encoding Encoding;
+    }
 
     public PortCopier(MappingConfig config, ILogger logger)
     {
@@ -50,13 +72,22 @@ public class PortCopier : IDisposable
             try
             {
                 var encoding = Encoding.GetEncoding(dest.Encoding);
-                _destinations.Add(new DestinationEntry(dest, encoding));
-
                 var patternInfo = dest.Patterns.Count > 0
                     ? $"Patterns=[{string.Join(", ", dest.Patterns)}]"
                     : "Patterns=(없음-전체전송)";
-                _logger.LogInformation("[{Name}] 대상 포트 {Port} 등록됨 (BaudRate={BaudRate}, Copies={Copies}, {PatternInfo})",
-                    Name, dest.Port, dest.BaudRate, dest.Copies, patternInfo);
+
+                if (dest.Patterns.Count > 0)
+                {
+                    _filteredDests.Add(new FilteredDestination { Config = dest, Encoding = encoding });
+                    _logger.LogInformation("[{Name}] 대상 포트 {Port} 등록됨 (필터모드, BaudRate={BaudRate}, Copies={Copies}, {PatternInfo})",
+                        Name, dest.Port, dest.BaudRate, dest.Copies, patternInfo);
+                }
+                else
+                {
+                    _directDests.Add(new DirectDestination { Config = dest, Encoding = encoding });
+                    _logger.LogInformation("[{Name}] 대상 포트 {Port} 등록됨 (직접전달, BaudRate={BaudRate}, Copies={Copies})",
+                        Name, dest.Port, dest.BaudRate, dest.Copies);
+                }
             }
             catch (Exception ex)
             {
@@ -64,7 +95,7 @@ public class PortCopier : IDisposable
             }
         }
 
-        if (_destinations.Count == 0)
+        if (_directDests.Count == 0 && _filteredDests.Count == 0)
         {
             _logger.LogWarning("[{Name}] 등록된 대상 포트가 없습니다. 데이터는 수신되지만 전달되지 않습니다.", Name);
         }
@@ -89,7 +120,6 @@ public class PortCopier : IDisposable
             _logger.LogWarning("[{Name}] 소스 포트 {Port} 열기 실패 - {Seconds}초 후 재시도: {Message}",
                 Name, _config.Source.Port, RetryIntervalMs / 1000, ex.Message);
 
-            // 기존 포트 정리
             if (_sourcePort != null)
             {
                 _sourcePort.DataReceived -= OnDataReceived;
@@ -114,13 +144,40 @@ public class PortCopier : IDisposable
             byte[] data = new byte[bytesToRead];
             int bytesRead = _sourcePort.Read(data, 0, bytesToRead);
 
-            lock (_bufferLock)
+            // 패턴 없는 대상: 수신 즉시 전달 (ESC/POS 명령 보존)
+            if (_directDests.Count > 0)
             {
-                _buffer.Write(data, 0, bytesRead);
+                lock (_writeLock)
+                {
+                    foreach (var dest in _directDests)
+                    {
+                        try
+                        {
+                            EnsurePortOpen(dest);
+                            dest.Port!.Write(data, 0, bytesRead);
+                            ResetIdleTimer(dest);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "[{Name}] {Port} 즉시 전송 실패", Name, dest.Config.Port);
+                            CloseDestPort(dest);
+                        }
+                    }
+                }
+            }
 
-                // 타이머 리셋: 마지막 데이터 수신 후 FlushTimeoutMs 경과 시 전송
-                _flushTimer?.Dispose();
-                _flushTimer = new Timer(FlushBuffer, null, FlushTimeoutMs, Timeout.Infinite);
+            // 버퍼에 축적 (패턴 대상 전송 + 추가 복사용)
+            bool needsBuffering = _filteredDests.Count > 0 ||
+                                  _directDests.Any(d => d.Copies > 1);
+
+            if (needsBuffering)
+            {
+                lock (_bufferLock)
+                {
+                    _buffer.Write(data, 0, bytesRead);
+                    _flushTimer?.Dispose();
+                    _flushTimer = new Timer(FlushBuffer, null, FlushTimeoutMs, Timeout.Infinite);
+                }
             }
         }
         catch (Exception ex)
@@ -139,28 +196,24 @@ public class PortCopier : IDisposable
             _buffer.SetLength(0);
         }
 
-        _logger.LogInformation("[{Name}] 인쇄 작업 감지: {Bytes} 바이트", Name, data.Length);
+        _logger.LogInformation("[{Name}] 인쇄 작업 완료 감지: {Bytes} 바이트", Name, data.Length);
 
-        foreach (var dest in _destinations)
+        // 패턴 지정 대상: 패턴 매칭 후 전송
+        foreach (var dest in _filteredDests)
         {
-            // 패턴 필터링: Patterns가 설정되어 있으면 하나라도 매칭될 때만 전송
-            if (dest.Config.Patterns.Count > 0)
+            var text = dest.Encoding.GetString(data);
+            var matched = dest.Config.Patterns.FirstOrDefault(p =>
+                text.Contains(p, StringComparison.OrdinalIgnoreCase));
+
+            if (matched == null)
             {
-                var text = dest.Encoding.GetString(data);
-                var matched = dest.Config.Patterns.FirstOrDefault(p =>
-                    text.Contains(p, StringComparison.OrdinalIgnoreCase));
-
-                if (matched == null)
-                {
-                    _logger.LogDebug("[{Name}] {Port} 패턴 불일치 - 전송 건너뜀", Name, dest.Config.Port);
-                    continue;
-                }
-
-                _logger.LogInformation("[{Name}] {Port} 패턴 매칭: \"{Pattern}\"",
-                    Name, dest.Config.Port, matched);
+                _logger.LogDebug("[{Name}] {Port} 패턴 불일치 - 전송 건너뜀", Name, dest.Config.Port);
+                continue;
             }
 
-            // 전송 시에만 포트를 열고, 전송 후 즉시 닫음 (다른 프로그램과 포트 공유)
+            _logger.LogInformation("[{Name}] {Port} 패턴 매칭: \"{Pattern}\"",
+                Name, dest.Config.Port, matched);
+
             try
             {
                 using var port = CreateSerialPort(dest.Config);
@@ -169,22 +222,87 @@ public class PortCopier : IDisposable
                 for (int i = 0; i < dest.Config.Copies; i++)
                 {
                     port.Write(data, 0, data.Length);
-                    _logger.LogDebug("[{Name}] {Port} 전송 완료 (복사 {Copy}/{Total})",
-                        Name, dest.Config.Port, i + 1, dest.Config.Copies);
 
-                    // 같은 포트에 여러 번 전송 시 약간의 딜레이
                     if (dest.Config.Copies > 1 && i < dest.Config.Copies - 1)
-                    {
                         Thread.Sleep(200);
-                    }
                 }
 
                 port.Close();
+                _logger.LogDebug("[{Name}] {Port} 전송 완료 (x{Copies})",
+                    Name, dest.Config.Port, dest.Config.Copies);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[{Name}] {Port} 전송 실패", Name, dest.Config.Port);
             }
+        }
+
+        // 직접전달 대상 중 추가 복사(2부 이상)가 필요한 경우: 추가분만 전송
+        lock (_writeLock)
+        {
+            foreach (var dest in _directDests)
+            {
+                if (dest.Copies <= 1) continue;
+
+                try
+                {
+                    EnsurePortOpen(dest);
+
+                    for (int i = 1; i < dest.Copies; i++)
+                    {
+                        Thread.Sleep(200);
+                        dest.Port!.Write(data, 0, data.Length);
+                    }
+
+                    ResetIdleTimer(dest);
+                    _logger.LogDebug("[{Name}] {Port} 추가 복사 전송 완료 (+{Extra}부)",
+                        Name, dest.Config.Port, dest.Copies - 1);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "[{Name}] {Port} 추가 복사 전송 실패", Name, dest.Config.Port);
+                    CloseDestPort(dest);
+                }
+            }
+        }
+    }
+
+    private void EnsurePortOpen(DirectDestination dest)
+    {
+        if (dest.Port != null && dest.Port.IsOpen) return;
+
+        dest.Port?.Dispose();
+        dest.Port = CreateSerialPort(dest.Config);
+        dest.Port.Open();
+        _logger.LogDebug("[{Name}] {Port} 대상 포트 열림", Name, dest.Config.Port);
+    }
+
+    private void ResetIdleTimer(DirectDestination dest)
+    {
+        dest.IdleTimer?.Dispose();
+        dest.IdleTimer = new Timer(_ =>
+        {
+            lock (_writeLock)
+            {
+                CloseDestPort(dest);
+            }
+        }, null, PortIdleCloseMs, Timeout.Infinite);
+    }
+
+    private void CloseDestPort(DirectDestination dest)
+    {
+        dest.IdleTimer?.Dispose();
+        dest.IdleTimer = null;
+
+        if (dest.Port != null)
+        {
+            if (dest.Port.IsOpen)
+            {
+                try { dest.Port.Close(); } catch { }
+            }
+            try { dest.Port.Dispose(); } catch { }
+            dest.Port = null;
+            _logger.LogDebug("[{Name}] {Port} 대상 포트 닫힘", Name, dest.Config.Port);
         }
     }
 
@@ -217,6 +335,9 @@ public class PortCopier : IDisposable
             }
             _sourcePort.Dispose();
         }
+
+        foreach (var dest in _directDests)
+            CloseDestPort(dest);
 
         _buffer.Dispose();
         _cts?.Dispose();
