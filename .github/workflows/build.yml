@@ -1,0 +1,79 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master, "claude/**" ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: "Target architecture"
+        required: false
+        default: "both"
+        type: choice
+        options:
+          - both
+          - x64
+          - x86
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        runtime:
+          - win-x64
+          - win-x86
+        exclude:
+          - runtime: ${{ github.event.inputs.architecture == 'x64' && 'win-x86' || (github.event.inputs.architecture == 'x86' && 'win-x64' || 'none') }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build Service
+        run: >
+          dotnet publish COMcopier.csproj
+          -c Release
+          -r ${{ matrix.runtime }}
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=none
+          -o deploy
+
+      - name: Build ConfigUI
+        run: >
+          dotnet publish COMcopier.ConfigUI\COMcopier.ConfigUI.csproj
+          -c Release
+          -r ${{ matrix.runtime }}
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=none
+          -o deploy
+
+      - name: Copy scripts and driver
+        shell: cmd
+        run: |
+          copy install-service.bat deploy\
+          copy uninstall-service.bat deploy\
+          copy setup-virtual-ports.bat deploy\
+          copy setup-virtual-ports.ps1 deploy\
+          copy com0com-3.0.0.0-i386-and-x64-signed.zip deploy\
+          del /q deploy\*.pdb 2>nul
+          del /q deploy\appsettings.Development.json 2>nul
+          del /q deploy\*.runtimeconfig.json 2>nul
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: COMcopier-${{ matrix.runtime }}
+          path: deploy/
