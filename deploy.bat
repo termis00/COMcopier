@@ -5,7 +5,15 @@ echo ============================================
 echo.
 
 set DEPLOY_DIR=%~dp0deploy
-set RUNTIME=win-x64
+if "%PROCESSOR_ARCHITECTURE%"=="x86" (
+    if not defined PROCESSOR_ARCHITEW6432 (
+        set RUNTIME=win-x86
+    ) else (
+        set RUNTIME=win-x64
+    )
+) else (
+    set RUNTIME=win-x64
+)
 
 :: Find dotnet SDK - check common install locations
 set DOTNET_FOUND=0
