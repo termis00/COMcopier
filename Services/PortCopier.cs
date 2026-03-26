@@ -21,9 +21,14 @@ public class PortCopier : IDisposable
     private readonly MemoryStream _buffer = new();
     private readonly object _bufferLock = new();
     private Timer? _flushTimer;
+    private Timer? _retryTimer;
+    private CancellationTokenSource? _cts;
 
     // 데이터 수신 후 이 시간(ms) 동안 추가 데이터가 없으면 한 건의 인쇄 작업이 끝난 것으로 판단
     private const int FlushTimeoutMs = 500;
+
+    // 소스 포트 연결 재시도 간격 (ms)
+    private const int RetryIntervalMs = 5000;
 
     public string Name => _config.Name;
 
@@ -35,19 +40,7 @@ public class PortCopier : IDisposable
 
     public void Start()
     {
-        try
-        {
-            _sourcePort = CreateSerialPort(_config.Source);
-            _sourcePort.DataReceived += OnDataReceived;
-            _sourcePort.Open();
-            _logger.LogInformation("[{Name}] 소스 포트 {Port} 열림 (BaudRate={BaudRate})",
-                Name, _config.Source.Port, _config.Source.BaudRate);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[{Name}] 소스 포트 {Port} 열기 실패", Name, _config.Source.Port);
-            throw;
-        }
+        _cts = new CancellationTokenSource();
 
         // euc-kr 등 추가 인코딩 지원을 위해 등록
         System.Text.Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
@@ -74,6 +67,38 @@ public class PortCopier : IDisposable
         if (_destinations.Count == 0)
         {
             _logger.LogWarning("[{Name}] 등록된 대상 포트가 없습니다. 데이터는 수신되지만 전달되지 않습니다.", Name);
+        }
+
+        TryOpenSourcePort();
+    }
+
+    private void TryOpenSourcePort()
+    {
+        if (_cts?.IsCancellationRequested == true) return;
+
+        try
+        {
+            _sourcePort = CreateSerialPort(_config.Source);
+            _sourcePort.DataReceived += OnDataReceived;
+            _sourcePort.Open();
+            _logger.LogInformation("[{Name}] 소스 포트 {Port} 열림 (BaudRate={BaudRate})",
+                Name, _config.Source.Port, _config.Source.BaudRate);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[{Name}] 소스 포트 {Port} 열기 실패 - {Seconds}초 후 재시도: {Message}",
+                Name, _config.Source.Port, RetryIntervalMs / 1000, ex.Message);
+
+            // 기존 포트 정리
+            if (_sourcePort != null)
+            {
+                _sourcePort.DataReceived -= OnDataReceived;
+                try { _sourcePort.Dispose(); } catch { }
+                _sourcePort = null;
+            }
+
+            _retryTimer?.Dispose();
+            _retryTimer = new Timer(_ => TryOpenSourcePort(), null, RetryIntervalMs, Timeout.Infinite);
         }
     }
 
@@ -179,6 +204,8 @@ public class PortCopier : IDisposable
 
     public void Dispose()
     {
+        _cts?.Cancel();
+        _retryTimer?.Dispose();
         _flushTimer?.Dispose();
 
         if (_sourcePort != null)
@@ -192,6 +219,7 @@ public class PortCopier : IDisposable
         }
 
         _buffer.Dispose();
+        _cts?.Dispose();
 
         _logger.LogInformation("[{Name}] 포트 복사기 종료됨", Name);
     }

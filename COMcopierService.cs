@@ -42,24 +42,17 @@ public class COMcopierService : BackgroundService
         // 각 매핑별로 PortCopier 인스턴스 생성 및 시작
         foreach (var mapping in settings.Mappings)
         {
-            try
-            {
-                var copier = new PortCopier(mapping, _loggerFactory.CreateLogger($"PortCopier.{mapping.Name}"));
-                copier.Start();
-                _copiers.Add(copier);
-                _logger.LogInformation("매핑 '{Name}' 시작됨: {Source} → {Destinations}",
-                    mapping.Name,
-                    mapping.Source.Port,
-                    string.Join(", ", mapping.Destinations.Select(d => $"{d.Port}(x{d.Copies})")));
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "매핑 '{Name}' 시작 실패", mapping.Name);
-            }
+            var copier = new PortCopier(mapping, _loggerFactory.CreateLogger($"PortCopier.{mapping.Name}"));
+            copier.Start();
+            _copiers.Add(copier);
+            _logger.LogInformation("매핑 '{Name}' 시작됨: {Source} → {Destinations}",
+                mapping.Name,
+                mapping.Source.Port,
+                string.Join(", ", mapping.Destinations.Select(d => $"{d.Port}(x{d.Copies})")));
         }
 
-        _logger.LogInformation("COMcopier 서비스 시작 완료. 활성 매핑: {Count}/{Total}",
-            _copiers.Count, settings.Mappings.Count);
+        _logger.LogInformation("COMcopier 서비스 시작 완료. 매핑: {Count}개",
+            _copiers.Count);
 
         return base.StartAsync(cancellationToken);
     }
