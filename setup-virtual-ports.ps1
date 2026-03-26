@@ -19,10 +19,15 @@ Write-Host "  COMcopier   <- $PortB"
 Write-Host ""
 
 # --- Paths ---
-# com0com installs to Program Files (x86) on 64-bit Windows
+$is64bit = [Environment]::Is64BitOperatingSystem
 $com0comDir = $null
 $setupcPath = $null
-foreach ($dir in @("${env:ProgramFiles}\com0com", "${env:ProgramFiles(x86)}\com0com")) {
+if ($is64bit) {
+    $searchDirs = @("${env:ProgramFiles}\com0com", "${env:ProgramFiles(x86)}\com0com")
+} else {
+    $searchDirs = @("${env:ProgramFiles}\com0com")
+}
+foreach ($dir in $searchDirs) {
     if (Test-Path "$dir\setupc.exe") {
         $com0comDir = $dir
         $setupcPath = "$dir\setupc.exe"
@@ -52,10 +57,15 @@ else {
     Write-Host "  A Windows security prompt may appear - please accept the driver." -ForegroundColor Yellow
     Write-Host ""
 
-    # Find installer exe (prefer x64)
+    # Find installer exe matching OS architecture
     # com0com ZIP contains: Setup_com0com_v3.0.0.0_W7_x64_signed.exe / x86 variant
+    if ($is64bit) {
+        $preferArch = "x64"
+    } else {
+        $preferArch = "x86"
+    }
     $setupExe = Get-ChildItem -Path $extractPath -Filter "*.exe" -Recurse |
-                Where-Object { $_.Name -match "x64" } |
+                Where-Object { $_.Name -match $preferArch } |
                 Select-Object -First 1
 
     if (-not $setupExe) {
@@ -84,7 +94,7 @@ else {
     Remove-Item $extractPath -Recurse -Force -ErrorAction SilentlyContinue
 
     # Re-scan for setupc.exe after installation
-    foreach ($dir in @("${env:ProgramFiles}\com0com", "${env:ProgramFiles(x86)}\com0com")) {
+    foreach ($dir in $searchDirs) {
         if (Test-Path "$dir\setupc.exe") {
             $com0comDir = $dir
             $setupcPath = "$dir\setupc.exe"
